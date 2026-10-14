@@ -1,10 +1,10 @@
 # DMSS HACS integration
 
-DMSS is a Home Assistant custom integration for HACS. Version 0.1.0 provides email/password setup through the official DMSS desktop login, automatic session recovery, and door-release controls compatible with HomeKit Bridge.
+DMSS is a Home Assistant custom integration for HACS. Version 0.1.1 provides email/password setup through the official DMSS desktop login, automatic session recovery, and door-release controls compatible with HomeKit Bridge.
 
 ## Install
 
-Home Assistant 2026.10 or newer is required.
+Home Assistant 2026.9.4 or newer is required.
 
 For HACS, add `https://github.com/Loic760/DMSS-HACS` under **HACS → Custom repositories**, category **Integration**, install DMSS, then restart Home Assistant. HACS requires the repository to be public. While this repository is private, use the manual installation below.
 
@@ -65,9 +65,9 @@ Email and password are stored in the Home Assistant config entry. Session and de
 
 ## Validation and scope
 
-The client was tested against the actual account and installation. The two primary door releases were physically confirmed by the installation owner. Home Assistant 2026.10.1 tests verify setup, all three exact entity IDs, one-shot button dispatch, unavailable states, authentication error handling, and unloading. Protocol tests cover independent renewal, expired sessions, credential rejection, signatures, and non-replayed ambiguous commands.
+The client was tested against the actual account and installation. The two primary door releases were physically confirmed by the installation owner. Home Assistant 2026.9.4 and 2026.10.1 tests verify setup, all three exact entity IDs, one-shot button dispatch, unavailable states, authentication error handling, and unloading. CI checks both Home Assistant versions. Protocol tests cover independent renewal, expired sessions, credential rejection, signatures, and non-replayed ambiguous commands.
 
-This version provides account and door controls. Camera, two-way audio, and ring-event work is being developed separately; those features are not advertised as operational in 0.1.0.
+This version provides account and door controls. Camera, two-way audio, and ring-event work is being developed separately; those features are not advertised as operational in 0.1.1.
 
 Development checks (run each suite separately):
 

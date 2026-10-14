@@ -5,12 +5,15 @@ permissions:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        homeassistant: ['2026.9.4', '2026.10.1']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
-      - run: pip install homeassistant==2026.10.1 requests==2.34.2 cryptography==50.0.1 ruff
+      - run: pip install homeassistant==${{ matrix.homeassistant }} requests==2.34.2 'cryptography>=48.0.1,<51' ruff
       - run: ruff check custom_components --select F
       - run: python -m unittest discover -s tests -p test_client.py
       - run: python -m unittest discover -s tests -p test_web_auth.py
