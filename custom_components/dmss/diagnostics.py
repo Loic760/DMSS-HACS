@@ -10,6 +10,9 @@ async def async_get_config_entry_diagnostics(hass, entry):
     return {
         "loaded": True,
         "local_bell_subscriptions": len(coordinator.bells.connected),
+        "incoming_call_push_subscriptions": sum(bool(getattr(feed,'call_state_supported',False)) for feed in coordinator.bells.feeds.values()),
+        "incoming_call_poll_connections": sum(bool(getattr(feed,'call_state_poll_supported',False)) for feed in coordinator.bells.feeds.values()),
+        "call_state_poll_interval_seconds": 1,
         "bell_transport": "local_native_push",
         "last_update_success": coordinator.last_update_success,
         "auth_method": "web",

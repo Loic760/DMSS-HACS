@@ -27,6 +27,20 @@ class LocalDHIP:
         self.buffer = bytearray()
         self.pending = []
         self.keepalive_interval = 20
+        self.call_state_handle = None
+        self.call_state_poll_supported = False
+        self.call_state_poll_interval = 1.0
+
+    def _queue_notification(self, reply):
+        method=str(reply.get('method','')).lower()
+        params=reply.get('params') or {}
+        if method=='client.notifyeventstream':
+            self.pending.extend(x for x in (params.get('eventList') or []) if isinstance(x,dict))
+            return True
+        if method.startswith('client.') and ('callstate' in method or ('videotalkphone' in method and 'notify' in method)):
+            self.pending.append({'Code':'VTPCallState','Action':'State','Data':params})
+            return True
+        return False
 
     def send(self, method, params, object_id=None):
         import json, struct
@@ -62,12 +76,7 @@ class LocalDHIP:
         deadline=time.monotonic()+self.timeout
         while time.monotonic()<deadline:
             reply=self.receive()
-            if reply.get('method') == 'client.notifyEventStream':
-                self.pending.extend((reply.get('params') or {}).get('eventList') or [])
-                continue
-            if 'callstate' in str(reply.get('method','')).lower():
-                self.pending.append({'Code':'VTPCallState','Action':'State','Data':reply.get('params') or {}})
-                continue
+            if self._queue_notification(reply): continue
             if reply.get('id') != sequence: continue
             if verify and reply.get('result') is not True:
                 code=(reply.get('error') or {}).get('code')
@@ -100,10 +109,13 @@ class LocalDHIP:
                 made=self.request('VideoTalkPhone.factory.instance',{},verify=False)
                 handle=made.get('result')
                 if type(handle) is int and handle>0:
+                    self.call_state_handle=handle
                     self.request('VideoTalkPhone.attachCallState',{},object_id=handle)
                     self.call_state_supported=True
             except LocalEventError:
                 pass
+            if self.call_state_handle is not None:
+                self.poll_call_state()
             self.sock.settimeout(1)
             return self
         except Exception:
@@ -111,23 +123,34 @@ class LocalDHIP:
 
     def listen(self, callback, stop):
         import socket
-        for event in self.pending: callback(event)
-        self.pending.clear()
         last_keepalive=time.monotonic()
+        last_poll=time.monotonic()
         while not stop.is_set():
+            pending,self.pending=self.pending,[]
+            for event in pending: callback(event)
+            if self.call_state_handle is not None and time.monotonic()-last_poll>=self.call_state_poll_interval:
+                self.poll_call_state()
+                last_poll=time.monotonic()
+                continue
             if time.monotonic()-last_keepalive>=self.keepalive_interval:
                 self.send('global.keepAlive',{'timeout':60,'active':True})
                 last_keepalive=time.monotonic()
             try: reply=self.receive()
             except socket.timeout: continue
-            if reply.get('method') == 'client.notifyEventStream':
-                events=(reply.get('params') or {}).get('eventList') or []
-                for event in events:
-                    if isinstance(event,dict): callback(event)
-            elif 'callstate' in str(reply.get('method','')).lower():
-                callback({'Code':'VTPCallState','Action':'State','Data':reply.get('params') or {}})
-            elif reply.get('result') is False:
+            if self._queue_notification(reply): continue
+            if reply.get('result') is False:
                 raise LocalEventError('Local event session rejected; reconnect required')
+
+    def poll_call_state(self):
+        """Read current state, preserving push notifications received mid-reply."""
+        if self.call_state_handle is None:return
+        reply=self.request('VideoTalkPhone.getCallState',{},verify=False,object_id=self.call_state_handle)
+        if reply.get('result') is True:
+            self.call_state_poll_supported=True
+            self.pending.append({'Code':'VTPCallState','Action':'State','Data':reply.get('params') or {},'Source':'local state poll'})
+        else:
+            self.call_state_poll_supported=False
+            self.call_state_handle=None  # Unsupported method; retain push.
 
     def close(self):
         import socket
@@ -138,61 +161,124 @@ class LocalDHIP:
 
 
 class BellNormalizer:
-    """Recognize explicit bell/call signals; retain unknown codes without alerts."""
+    """Track live incoming, connected and ended calls independently of logs."""
     def __init__(self, device):
         self.addresses = {r.get('channelIp'):r.get('channelName') for r in device.get('deviceChannels',[]) if r.get('channelName') in ('front','back') and r.get('channelIp')}
         self.recent = {}
         self.active = {}
+        self.call = None
         self.counter = 0
+
+    @staticmethod
+    def _fields(data, depth=0):
+        if depth > 5 or not isinstance(data,dict): return {}
+        result = {}
+        for key,value in data.items():
+            normalized=''.join(c for c in str(key).lower() if c.isalnum())
+            if isinstance(value,dict): result.update(BellNormalizer._fields(value,depth+1))
+            elif isinstance(value,list):
+                for item in value[:20]: result.update(BellNormalizer._fields(item,depth+1))
+            elif isinstance(value,(str,int,float,bool)):
+                result[normalized]=value
+        return result
+
+    def _door(self, fields):
+        for value in fields.values():
+            if isinstance(value,str) and value in self.addresses:return self.addresses[value]
+        for key in ('door','doorname','channelname'):
+            if fields.get(key) in ('front','back'):return fields[key]
+        # SDK Channel and RPC channelId identify the linked VTO. Index on a
+        # VTH event is its indoor index, so it must never be treated as a door.
+        channel=fields.get('channel',fields.get('channelid'))
+        return {'1':'front','2':'back'}.get(str(channel),'unknown')
+
+    @staticmethod
+    def _state(fields):
+        # Integers have a specified meaning only in the SDK emCallState field.
+        sdk=fields.get('emcallstate')
+        if type(sdk) is int:
+            return {0:'unknown',1:'idle',2:'outgoing',3:'incoming',4:'ringing',
+                    5:'connecting',6:'connecting',7:'ended'}.get(sdk,'unknown')
+        value=next((fields[k] for k in ('callstate','state','status') if isinstance(fields.get(k),str)), '')
+        value=''.join(c for c in value.lower() if c.isalnum())
+        return {'ring':'ringing','ringing':'ringing','called':'incoming','incoming':'incoming',
+                'receive':'incoming','beingcalled':'incoming','incomingcall':'incoming',
+                'invite':'incoming','invited':'incoming','calling':'outgoing',
+                'talking':'connected','talk':'connected','connected':'connected','answered':'connected',
+                'connecting':'connecting','connecting2':'connecting','idle':'idle','disconnected':'ended',
+                'disconnect':'ended','hangup':'ended','ended':'ended','end':'ended',
+                'cancelled':'ended','canceled':'ended','missed':'missed'}.get(value,'unknown')
 
     def normalize(self, event):
         import json
-        if not isinstance(event,dict) or not isinstance(event.get('Code'),str): return None
-        code=event['Code']; action=event.get('Action')
+        if not isinstance(event,dict) or not isinstance(event.get('Code'),str):return None
+        code=event['Code'];action=str(event.get('Action','')).lower()
         data=event.get('Data') or {}
-        if not isinstance(data,dict): data={}
-        door='unknown'
-        for value in data.values():
-            if isinstance(value,str) and value in self.addresses: door=self.addresses[value]
-        channel=data.get('Channel',data.get('ChannelID'))
-        if door=='unknown' and str(channel) in ('1','2'): door='front' if str(channel)=='1' else 'back'
-        state=data.get('State')
+        fields=self._fields(data)
+        door=self._door(fields)
+        state=self._state(fields)
+        phase='unknown';kind='notification';title='Device event: '+code[:80]
         if code=='VTPCallState':
-            value=data.get('emCallState',data.get('CallState',data.get('callState',data.get('State',data.get('state')))))
-            if isinstance(value,dict):
-                data={**data,**value}
-                value=value.get('State',value.get('state'))
-            # Named wire states; integer mapping only for the explicit SDK field.
-            ringing=(isinstance(value,str) and value.lower() in ('ring','ringing','called','incoming','receive','beingcalled','incomingcall','invited')) or data.get('emCallState') in (3,4)
-            key=(code,door)
-            previous=self.active.get(key,False);self.active[key]=ringing
-            if not ringing or previous:return None
-            kind='ring';title='Incoming doorbell call'
+            if state in ('incoming','ringing'):
+                if self.call and self.call['state'] in ('incoming','ringing'):
+                    if door!='unknown':self.call['door']=door
+                    self.call['code']=code
+                    return None
+                self.call={'state':state,'door':door,'code':code}
+                kind='ring';phase='start';title='Incoming doorbell call'
+            elif state in ('connecting','connected'):
+                previous=self.call
+                if door=='unknown' and previous:door=previous['door']
+                if previous and previous['state']==state:return None
+                self.call={'state':state,'door':door}
+                kind='call';phase=state;title='Door call '+state
+            elif state in ('idle','ended','missed'):
+                previous=self.call;self.call=None
+                if not previous:return None
+                if door=='unknown':door=previous['door']
+                kind='missed_call' if state=='missed' else 'call_ended'
+                phase='end';title='Missed door call' if state=='missed' else 'Door call ended'
+            else:return None
         elif code=='BackKeyLight':
-            key=(code,door)
-            ringing=str(state) in ('1','2')
+            key=(code,door);ringing=str(fields.get('state')) in ('1','2')
             previous=self.active.get(key,False);self.active[key]=ringing
-            if not ringing or previous: return None
-            kind='ring';title='Doorbell rang'
+            if not ringing and previous and self.call and self.call.get('code')=='BackKeyLight':
+                self.call=None
+            if not ringing or previous:return None
+            if self.call and self.call['state'] in ('incoming','ringing'):return None
+            self.call={'state':'ringing','door':door,'code':code}
+            kind='ring';phase='start';title='Doorbell rang'
         elif code in ('Invite','PhoneCallDetect','AccessDoorBell','DoorbellCall','TalkingInvite'):
-            if action in ('Stop','Inactive'): return None
-            kind='ring';title='Doorbell rang'
+            if action in ('stop','inactive'):return None
+            if self.call and self.call['state'] in ('incoming','ringing'):
+                if door!='unknown':self.call['door']=door
+                return None
+            self.call={'state':'incoming','door':door,'code':code}
+            kind='ring';phase='start';title='Doorbell rang'
         elif code=='VideoTalkLog':
-            kind='missed_call' if data.get('EndState')=='Missed' else 'call'
+            # A delayed log can describe an older call while a new call is
+            # already ringing. Never reset or attribute the live call from it.
+            kind='missed_call' if str(fields.get('endstate','')).lower() in ('missed','noanswer','noanswered') else 'call_ended'
+            phase='end';state='missed' if kind=='missed_call' else 'ended'
             title='Missed door call' if kind=='missed_call' else 'Door call ended'
-        elif code in ('VideoTalk','VideoTalkPhone','Talking'):
-            if action=='Stop': return None
-            kind='call';title='Door call activity'
-        else:
-            kind='notification';title='Device event: '+code[:80]
+        elif code in ('VideoTalk','VideoTalkPhone','Talking','TalkingHangup','Hangup'):
+            if action=='stop' or code in ('TalkingHangup','Hangup'):
+                previous=self.call;self.call=None
+                if door=='unknown' and previous:door=previous['door']
+                kind='call_ended';phase='end';state='ended';title='Door call ended'
+            else:
+                if door=='unknown' and self.call:door=self.call['door']
+                self.call={'state':'connected','door':door}
+                kind='call';phase='connected';state='connected';title='Door call connected'
         fingerprint=hashlib.sha256(json.dumps(event,sort_keys=True,default=str).encode()).hexdigest()
         current=time.monotonic()
-        if code in ('BackKeyLight','VTPCallState') or current-self.recent.get(fingerprint,-100)>5:
-            self.recent[fingerprint]=current
-        else: return None
+        if code in ('VTPCallState','BackKeyLight'):pass  # State edges already suppress duplicates.
+        elif current-self.recent.get(fingerprint,-100)<=5:return None
+        else:self.recent[fingerprint]=current
         self.recent={k:v for k,v in self.recent.items() if current-v<60}
         self.counter+=1
         return {'id':f'local:{int(time.time()*1000)}:{self.counter}','door':door,'kind':kind,
                 'title':title,'time':datetime.now(timezone.utc).isoformat(),'received_at':datetime.now(timezone.utc).isoformat(),
-                'verified':kind!='notification','phase':'start' if kind=='ring' else 'end' if code=='VideoTalkLog' else 'unknown','source':'local event push','event_code':code[:80],
-                'data_fields':sorted(str(k)[:60] for k in data)[:30]}
+                'verified':kind!='notification','phase':phase,'call_state':state,
+                'source':'local state poll' if event.get('Source')=='local state poll' else 'local event push','event_code':code[:80],
+                'data_fields':sorted(str(k)[:60] for k in fields)[:30]}

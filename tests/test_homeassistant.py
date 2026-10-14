@@ -114,6 +114,17 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bus_events[0]["door"], "front")
             self.assertEqual(bus_events[0]["phase"], "start")
             self.assertNotEqual(back.attributes.get("event_type"), "ring")
+            self.assertEqual(set(front.attributes["event_types"]), {"ring","call","call_ended","missed_call"})
+            for kind, phase in (("call","connected"),("call_ended","end"),("missed_call","end")):
+                coordinator.bells._on_event("test-device", {"door":"front","kind":kind,"phase":phase,
+                    "source":"local state poll","received_at":"2026-10-14T08:00:01+00:00",
+                    "event_code":"VTPCallState","verified":True}, None)
+                await self.hass.async_block_till_done()
+                front=self.hass.states.get("event.building_doorbell_front")
+                self.assertEqual(front.attributes["event_type"],kind)
+                self.assertEqual(front.attributes["phase"],phase)
+                self.assertEqual(bus_events[-1]["type"],kind)
+                self.assertEqual(front.attributes["source"],"local state poll")
             coordinator.bells._on_event("test-device", None, False)
             await self.hass.async_block_till_done()
             self.assertEqual(self.hass.states.get("event.building_doorbell_front").state, "unavailable")

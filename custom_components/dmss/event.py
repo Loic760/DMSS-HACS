@@ -15,7 +15,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class DMSSDoorbellEvent(EventEntity):
     _attr_has_entity_name = False
     _attr_device_class = EventDeviceClass.DOORBELL
-    _attr_event_types = ['ring', 'call', 'missed_call']
+    _attr_event_types = ['ring', 'call', 'call_ended', 'missed_call']
 
     def __init__(self, coordinator, device, door):
         self.manager = coordinator.bells
@@ -39,5 +39,6 @@ class DMSSDoorbellEvent(EventEntity):
         if serial != self.serial: return
         if event and event.get('door') == self.door and event.get('kind') in self._attr_event_types:
             self._trigger_event(event['kind'], {'door':self.door,'phase':event.get('phase','unknown'),
-                'source':'local','event_code':event['event_code']})
+                'source':event.get('source','local'),'call_state':event.get('call_state','unknown'),
+                'event_code':event['event_code']})
         self.async_write_ha_state()

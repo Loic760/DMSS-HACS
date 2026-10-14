@@ -41,14 +41,15 @@ class BellManager:
         if self.stop.is_set(): return
         if connected is True: self.connected.add(serial)
         elif connected is False: self.connected.discard(serial)
-        if event and event.get('verified') and event.get('kind') in ('ring', 'call', 'missed_call'):
+        if event and event.get('verified') and event.get('kind') in ('ring', 'call', 'call_ended', 'missed_call'):
             from homeassistant.helpers import device_registry as dr
             from .const import DOMAIN
             device = dr.async_get(self.hass).async_get_device_by_identifier((DOMAIN, serial), self.coordinator.entry.entry_id)
             self.hass.bus.async_fire('dmss_doorbell', {
                 'device_id': device.id if device else None,
                 'door': event['door'], 'type': event['kind'], 'phase': event.get('phase', 'unknown'),
-                'source': 'local', 'received_at': event['received_at'], 'event_code': event['event_code']})
+                'source': event.get('source','local'), 'call_state':event.get('call_state','unknown'),
+                'received_at': event['received_at'], 'event_code': event['event_code']})
         for listener in tuple(self.listeners): listener(serial, event)
 
     def start(self):

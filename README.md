@@ -1,6 +1,6 @@
 # DMSS HACS integration
 
-DMSS is a Home Assistant custom integration for HACS. Version 0.2.1 provides email/password setup through the official DMSS desktop login, automatic session recovery, and door-release controls compatible with HomeKit Bridge.
+DMSS is a Home Assistant custom integration for HACS. Version 0.2.2 provides email/password setup through the official DMSS desktop login, automatic session recovery, and door-release controls compatible with HomeKit Bridge.
 
 ## Install
 
@@ -26,7 +26,7 @@ Discovery includes the primary relay of a configured door channel when DMSS omit
 
 ## Doorbell events and notifications
 
-Version 0.2.1 adds a live native event subscription to the indoor VTH over local TCP port 5000. Home Assistant must reach the indoor interphone on that port; outdoor stations can remain on another network. Credentials are obtained from the existing DMSS login, with no extra device password setup. The integration also subscribes to `VideoTalkPhone.attachCallState` to receive incoming-call starts. It never answers, rejects or hangs up a call.
+Version 0.2.2 adds a live native event subscription to the indoor VTH over local TCP port 5000. Home Assistant must reach the indoor interphone on that port; outdoor stations can remain on another network. Credentials are obtained from the existing DMSS login, with no extra device password setup. The integration subscribes to `VideoTalkPhone.attachCallState` and reads `VideoTalkPhone.getCallState` every second on the same local connection. This read-only fallback detects the current incoming-call state when the firmware only pushes the final call log. Unsupported state queries leave the existing push feed enabled. It never answers, rejects or hangs up a call.
 
 New event entities:
 
@@ -34,7 +34,16 @@ New event entities:
 - `event.building_doorbell_back`
 - `event.building_doorbell_unknown`
 
-Event types are `ring`, `call` and `missed_call`. A `ring` event has `phase: start`; missed-call/call-ended records remain separate. Door attribution uses the event's channel or a known outdoor address from inventory. If the device omits door identity, the event appears on the unknown entity instead of guessing. Local connection failures make event entities unavailable; reconnects refresh device credentials. Cloud unlock buttons remain independent.
+Event types and phases:
+
+| Event type | Meaning | Phase |
+|---|---|---|
+| `ring` | Incoming/ringing call | `start` |
+| `call` | Call connecting or connected | `connecting` or `connected` |
+| `call_ended` | Current call ended, or completed-call record | `end` |
+| `missed_call` | Explicit missed-call state or record | `end` |
+
+Ringing transitions trigger once, even when both push and state polling report the same call. Connected and ended states are not converted into ring alerts. Polling an idle interphone after setup does not create an event. A ring-to-idle transition alone is not guessed to be a missed call; only an explicit missed signal creates `missed_call`. Door attribution uses the event's channel or a known outdoor address from inventory. If the device omits door identity, the event appears on the unknown entity instead of guessing. Local connection failures make event entities unavailable; reconnects refresh device credentials. Cloud unlock buttons remain independent.
 
 In the automation editor, choose **Device → your DMSS interphone**. Its trigger list now offers **Front doorbell rings**, **Back doorbell rings**, and **Doorbell rings (entrance unknown)**. These triggers only match ring starts, exclude missed-call records, and are scoped to the selected device. Add an iPhone notification action and save.
 
@@ -59,7 +68,9 @@ mode: queued
 
 The entities can also be used in state-change automations; filter `event_type: ring` and `phase: start`, and ignore initial restored/unavailable states. Event-bus triggers above only fire for received events and avoid restoration alerts. No notification is sent until the user configures an automation.
 
-The native subscription and call-state attachment succeeded on the tested interphone. The owner observed a missed-call event. Actual incoming-start timing and reliable front/back attribution still need a physical ring test on this installation. This is not advertised as verified just because subscription setup succeeded.
+The native subscription, call-state attachment and repeated current-state queries succeeded on the tested indoor interphone. The owner previously observed a missed-call event. Home Assistant tests replay the complete incoming → connected → ended sequence and verify that notification triggers fire only on the incoming event. Actual incoming-start timing and front/back attribution still need a physical ring test; idle queries alone do not establish those results.
+
+After updating, restart Home Assistant. The existing automation filtered to `type: ring` and `phase: start` remains valid. Download integration diagnostics to check `incoming_call_poll_connections` and `incoming_call_push_subscriptions`; supported, connected installations should report a nonzero polling count. No camera, microphone, call-answer or hang-up connection is opened by this listener.
 
 Protocol references: [Dahua native/RPC implementation](https://github.com/rroller/dahua), [VTO/VTH event meanings](https://github.com/myhomeiot/DahuaVTO). The protocol implementation is independent and contains no copied credentials or device addresses.
 
@@ -106,7 +117,7 @@ Email and password are stored in the Home Assistant config entry. Session and de
 
 The client was tested against the actual account and installation. The two primary door releases were physically confirmed by the installation owner. Home Assistant 2026.9.4 and 2026.10.1 tests verify setup, all three exact entity IDs, one-shot button dispatch, unavailable states, authentication error handling, and unloading. CI checks both Home Assistant versions. Protocol tests cover independent renewal, expired sessions, credential rejection, signatures, and non-replayed ambiguous commands.
 
-This version provides account and door controls. Camera, two-way audio, and ring-event work is being developed separately; those features are not advertised as operational in 0.2.1.
+This version provides account/door controls and doorbell event handling. Camera and two-way audio remain separate local work and are not included in this release.
 
 Development checks (run each suite separately):
 
