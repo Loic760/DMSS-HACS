@@ -1,0 +1,17 @@
+{
+  "domain": "dmss",
+  "name": "DMSS",
+  "version": "0.1.0",
+  "config_flow": true,
+  "documentation": "https://github.com/Loic760/DMSS-HACS",
+  "issue_tracker": "https://github.com/Loic760/DMSS-HACS/issues",
+  "codeowners": [
+    "@Loic760"
+  ],
+  "iot_class": "cloud_polling",
+  "requirements": [
+    "requests==2.34.2",
+    "cryptography==50.0.1"
+  ],
+  "integration_type": "hub"
+}

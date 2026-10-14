@@ -1,0 +1,14 @@
+{
+  "config": {
+    "step": {
+      "user": {"title": "Connect DMSS", "description": "Sign in with your DMSS email and password. If the account requires verification, complete it in DMSS and retry.", "data": {"email": "Email", "password": "Password"}},
+      "reauth_confirm": {"title": "Reauthenticate DMSS", "description": "Enter your current credentials. Pending account verification must be completed in DMSS before retrying.", "data": {"email": "Email", "password": "Password"}},
+      "reconfigure": {"title": "Reconfigure DMSS", "description": "Update the password for this DMSS account.", "data": {"email": "Email", "password": "Password"}}
+    },
+    "error": {"invalid_auth": "Authentication was rejected or account verification is required. Complete verification in DMSS, then retry.", "cannot_connect": "Unable to connect to DMSS.", "unknown": "Unexpected DMSS response."},
+    "abort": {"already_configured": "This account is already configured.", "reauth_successful": "Reauthentication successful.", "reconfigure_successful": "Configuration updated.", "unique_id_mismatch": "Use the same email as the existing integration."}
+  },
+  "options": {
+    "step": {"init": {"title": "Door discovery", "description": "Enable an additional primary relay (relay 0) only for a VTO channel whose server response contains no relay list. Its existence cannot be confirmed from that response. Existing listed relays are always discovered. Leave this disabled unless you know the channel has a primary door release.", "data": {"include_unlisted_primary": "Include unlisted primary door relay"}}}
+  }
+}
