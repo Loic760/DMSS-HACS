@@ -9,6 +9,8 @@ async def async_get_config_entry_diagnostics(hass, entry):
     data = coordinator.data or {}
     return {
         "loaded": True,
+        "local_bell_subscriptions": len(coordinator.bells.connected),
+        "bell_transport": "local_native_push",
         "last_update_success": coordinator.last_update_success,
         "auth_method": "web",
         "session_storage": "memory_only",

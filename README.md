@@ -1,6 +1,6 @@
 # DMSS HACS integration
 
-DMSS is a Home Assistant custom integration for HACS. Version 0.1.1 provides email/password setup through the official DMSS desktop login, automatic session recovery, and door-release controls compatible with HomeKit Bridge.
+DMSS is a Home Assistant custom integration for HACS. Version 0.2.0 provides email/password setup through the official DMSS desktop login, automatic session recovery, and door-release controls compatible with HomeKit Bridge.
 
 ## Install
 
@@ -23,6 +23,43 @@ The interphone channels and relays are discovered from your account. Channels na
 Each press sends an unlock pulse. The device controls the release duration. The integration does not infer physical locked/unlocked state from a successful cloud response. Existing user-renamed entity IDs are preserved, and Home Assistant adds a suffix if an ID is already occupied.
 
 Discovery includes the primary relay of a configured door channel when DMSS omits its relay list. This is enabled by default and can be changed in the integration's options. Listed relays are always exposed.
+
+## Doorbell events and notifications
+
+Version 0.2.0 adds a live native event subscription to the indoor VTH over local TCP port 5000. Home Assistant must reach the indoor interphone on that port; outdoor stations can remain on another network. Credentials are obtained from the existing DMSS login, with no extra device password setup. The integration also subscribes to `VideoTalkPhone.attachCallState` to receive incoming-call starts. It never answers, rejects or hangs up a call.
+
+New event entities:
+
+- `event.building_doorbell_front`
+- `event.building_doorbell_back`
+- `event.building_doorbell_unknown`
+
+Event types are `ring`, `call` and `missed_call`. A `ring` event has `phase: start`; missed-call/call-ended records remain separate. Door attribution uses the event's channel or a known outdoor address from inventory. If the device omits door identity, the event appears on the unknown entity instead of guessing. Local connection failures make event entities unavailable; reconnects refresh device credentials. Cloud unlock buttons remain independent.
+
+For an easy notification automation, use the native event bus example below. Replace the mobile notification service with your own service under Home Assistant's Actions. The `phase: start` filter ensures a missed-call record does not become a delayed ring notification.
+
+```yaml
+alias: Building doorbell notification
+triggers:
+  - trigger: event
+    event_type: dmss_doorbell
+    event_data:
+      type: ring
+      phase: start
+actions:
+  - action: notify.mobile_app_your_iphone
+    data:
+      title: Building doorbell
+      message: >-
+        {{ trigger.event.data.door | title }} entrance is ringing.
+mode: queued
+```
+
+The entities can also be used in state-change automations; filter `event_type: ring` and `phase: start`, and ignore initial restored/unavailable states. Event-bus triggers above only fire for received events and avoid restoration alerts. No notification is sent until the user configures an automation.
+
+The native subscription and call-state attachment succeeded on the tested interphone. The owner observed a missed-call event. Actual incoming-start timing and reliable front/back attribution still need a physical ring test on this installation. This is not advertised as verified just because subscription setup succeeded.
+
+Protocol references: [Dahua native/RPC implementation](https://github.com/rroller/dahua), [VTO/VTH event meanings](https://github.com/myhomeiot/DahuaVTO). The protocol implementation is independent and contains no copied credentials or device addresses.
 
 ## Apple Home / HomeKit Bridge
 
@@ -67,7 +104,7 @@ Email and password are stored in the Home Assistant config entry. Session and de
 
 The client was tested against the actual account and installation. The two primary door releases were physically confirmed by the installation owner. Home Assistant 2026.9.4 and 2026.10.1 tests verify setup, all three exact entity IDs, one-shot button dispatch, unavailable states, authentication error handling, and unloading. CI checks both Home Assistant versions. Protocol tests cover independent renewal, expired sessions, credential rejection, signatures, and non-replayed ambiguous commands.
 
-This version provides account and door controls. Camera, two-way audio, and ring-event work is being developed separately; those features are not advertised as operational in 0.1.1.
+This version provides account and door controls. Camera, two-way audio, and ring-event work is being developed separately; those features are not advertised as operational in 0.2.0.
 
 Development checks (run each suite separately):
 
@@ -75,6 +112,7 @@ Development checks (run each suite separately):
 python -m unittest discover -s tests -p test_client.py
 python -m unittest discover -s tests -p test_web_auth.py
 python -m unittest discover -s tests -p test_runtime.py
+python -m unittest discover -s tests -p test_bell.py
 python -m unittest discover -s tests -p test_homeassistant.py
 ruff check custom_components --select F
 ```

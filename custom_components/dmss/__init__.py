@@ -31,6 +31,7 @@ async def async_setup_entry(hass, entry: ConfigEntry):
         hass.data[DOMAIN].pop(entry.entry_id, None)
         await coordinator.async_close()
         raise
+    coordinator.bells.start()
     return True
 
 

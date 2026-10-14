@@ -18,4 +18,5 @@ jobs:
       - run: python -m unittest discover -s tests -p test_client.py
       - run: python -m unittest discover -s tests -p test_web_auth.py
       - run: python -m unittest discover -s tests -p test_runtime.py
+      - run: python -m unittest discover -s tests -p test_bell.py
       - run: python -m unittest discover -s tests -p test_homeassistant.py

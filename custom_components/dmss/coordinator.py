@@ -10,6 +10,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from .bell_manager import BellManager
 from .client import DMSSClient
 from .const import CONF_INCLUDE_UNLISTED_PRIMARY, DOMAIN
 from .errors import is_auth_error
@@ -26,6 +27,7 @@ class DMSSCoordinator(DataUpdateCoordinator):
         self.entry = entry
         self.client = client
         self.api_lock = asyncio.Lock()
+        self.bells = BellManager(self)
         self.include_unlisted_primary = entry.options.get(CONF_INCLUDE_UNLISTED_PRIMARY, True)
 
     async def async_call(self, method, *args, **kwargs):
@@ -89,4 +91,5 @@ class DMSSCoordinator(DataUpdateCoordinator):
             raise HomeAssistantError("DMSS unlock request failed; physical door state is unknown") from None
 
     async def async_close(self):
+        await self.bells.async_stop()
         await self.async_call(self.client.http.close)

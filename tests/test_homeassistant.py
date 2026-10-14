@@ -81,6 +81,27 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
                 "entity_id": "button.unlock_building_front_1"}, blocking=True)
             client.unlock.assert_called_once()
             coordinator = self.hass.data["dmss"][self.entry.entry_id]
+            event_ids = sorted(s.entity_id for s in self.hass.states.async_all("event"))
+            self.assertEqual(event_ids, ["event.building_doorbell_back", "event.building_doorbell_front",
+                                         "event.building_doorbell_unknown"])
+            bus_events = []
+            remove_listener = self.hass.bus.async_listen("dmss_doorbell", lambda event: bus_events.append(dict(event.data)))
+            coordinator.bells._on_event("test-device", None, True)
+            coordinator.bells._on_event("test-device", {"door":"front", "kind":"ring", "phase":"start",
+                "source":"local event push", "received_at":"2026-10-14T08:00:00+00:00", "event_code":"VTPCallState",
+                "verified":True}, None)
+            await self.hass.async_block_till_done()
+            front = self.hass.states.get("event.building_doorbell_front")
+            back = self.hass.states.get("event.building_doorbell_back")
+            self.assertEqual(front.attributes["event_type"], "ring")
+            self.assertEqual(front.attributes["phase"], "start")
+            self.assertEqual(bus_events[0]["door"], "front")
+            self.assertEqual(bus_events[0]["phase"], "start")
+            self.assertNotEqual(back.attributes.get("event_type"), "ring")
+            coordinator.bells._on_event("test-device", None, False)
+            await self.hass.async_block_till_done()
+            self.assertEqual(self.hass.states.get("event.building_doorbell_front").state, "unavailable")
+            remove_listener()
             coordinator.async_set_update_error(UpdateFailed("test failure"))
             await self.hass.async_block_till_done()
             self.assertTrue(all(self.hass.states.get(e).state == "unavailable" for e in ids))
