@@ -1,6 +1,6 @@
 # DMSS HACS integration
 
-DMSS is a Home Assistant custom integration for HACS. Version 0.2.0 provides email/password setup through the official DMSS desktop login, automatic session recovery, and door-release controls compatible with HomeKit Bridge.
+DMSS is a Home Assistant custom integration for HACS. Version 0.2.1 provides email/password setup through the official DMSS desktop login, automatic session recovery, and door-release controls compatible with HomeKit Bridge.
 
 ## Install
 
@@ -26,7 +26,7 @@ Discovery includes the primary relay of a configured door channel when DMSS omit
 
 ## Doorbell events and notifications
 
-Version 0.2.0 adds a live native event subscription to the indoor VTH over local TCP port 5000. Home Assistant must reach the indoor interphone on that port; outdoor stations can remain on another network. Credentials are obtained from the existing DMSS login, with no extra device password setup. The integration also subscribes to `VideoTalkPhone.attachCallState` to receive incoming-call starts. It never answers, rejects or hangs up a call.
+Version 0.2.1 adds a live native event subscription to the indoor VTH over local TCP port 5000. Home Assistant must reach the indoor interphone on that port; outdoor stations can remain on another network. Credentials are obtained from the existing DMSS login, with no extra device password setup. The integration also subscribes to `VideoTalkPhone.attachCallState` to receive incoming-call starts. It never answers, rejects or hangs up a call.
 
 New event entities:
 
@@ -36,7 +36,9 @@ New event entities:
 
 Event types are `ring`, `call` and `missed_call`. A `ring` event has `phase: start`; missed-call/call-ended records remain separate. Door attribution uses the event's channel or a known outdoor address from inventory. If the device omits door identity, the event appears on the unknown entity instead of guessing. Local connection failures make event entities unavailable; reconnects refresh device credentials. Cloud unlock buttons remain independent.
 
-For an easy notification automation, use the native event bus example below. Replace the mobile notification service with your own service under Home Assistant's Actions. The `phase: start` filter ensures a missed-call record does not become a delayed ring notification.
+In the automation editor, choose **Device → your DMSS interphone**. Its trigger list now offers **Front doorbell rings**, **Back doorbell rings**, and **Doorbell rings (entrance unknown)**. These triggers only match ring starts, exclude missed-call records, and are scoped to the selected device. Add an iPhone notification action and save.
+
+For a YAML notification automation, use the native event bus example below. Replace the mobile notification service with your own service under Home Assistant's Actions. The `phase: start` filter ensures a missed-call record does not become a delayed ring notification.
 
 ```yaml
 alias: Building doorbell notification
@@ -104,7 +106,7 @@ Email and password are stored in the Home Assistant config entry. Session and de
 
 The client was tested against the actual account and installation. The two primary door releases were physically confirmed by the installation owner. Home Assistant 2026.9.4 and 2026.10.1 tests verify setup, all three exact entity IDs, one-shot button dispatch, unavailable states, authentication error handling, and unloading. CI checks both Home Assistant versions. Protocol tests cover independent renewal, expired sessions, credential rejection, signatures, and non-replayed ambiguous commands.
 
-This version provides account and door controls. Camera, two-way audio, and ring-event work is being developed separately; those features are not advertised as operational in 0.2.0.
+This version provides account and door controls. Camera, two-way audio, and ring-event work is being developed separately; those features are not advertised as operational in 0.2.1.
 
 Development checks (run each suite separately):
 

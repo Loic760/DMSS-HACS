@@ -84,6 +84,22 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
             event_ids = sorted(s.entity_id for s in self.hass.states.async_all("event"))
             self.assertEqual(event_ids, ["event.building_doorbell_back", "event.building_doorbell_front",
                                          "event.building_doorbell_unknown"])
+            from custom_components.dmss.device_trigger import async_get_triggers, async_attach_trigger
+            front_registry = entity_registry.async_get(self.hass).async_get("event.building_doorbell_front")
+            device_id = front_registry.device_id
+            triggers = await async_get_triggers(self.hass, device_id)
+            self.assertEqual({trigger["type"] for trigger in triggers}, {"front_ring", "back_ring", "unknown_ring"})
+            self.assertEqual(await async_get_triggers(self.hass, "unrelated-device"), [])
+            from homeassistant.components.device_automation import async_get_device_automations, DeviceAutomationType
+            picker = await async_get_device_automations(self.hass, DeviceAutomationType.TRIGGER, [device_id])
+            self.assertEqual({trigger["type"] for trigger in picker[device_id] if trigger["domain"] == "dmss"},
+                             {"front_ring", "back_ring", "unknown_ring"})
+            fired = []
+            async def trigger_action(variables, context=None):
+                fired.append(variables)
+            detach_trigger = await async_attach_trigger(self.hass,
+                {"platform":"device", "domain":"dmss", "device_id":device_id, "type":"front_ring"},
+                trigger_action, {"trigger_data":{"id":"fixture", "idx":"0", "alias":None}, "variables":{}})
             bus_events = []
             remove_listener = self.hass.bus.async_listen("dmss_doorbell", lambda event: bus_events.append(dict(event.data)))
             coordinator.bells._on_event("test-device", None, True)
@@ -101,6 +117,16 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
             coordinator.bells._on_event("test-device", None, False)
             await self.hass.async_block_till_done()
             self.assertEqual(self.hass.states.get("event.building_doorbell_front").state, "unavailable")
+            self.assertEqual(len(fired), 1)
+            for data in (
+                {"device_id":device_id, "door":"front", "type":"missed_call", "phase":"end"},
+                {"device_id":device_id, "door":"back", "type":"ring", "phase":"start"},
+                {"device_id":"unrelated-device", "door":"front", "type":"ring", "phase":"start"},
+            ):
+                self.hass.bus.async_fire("dmss_doorbell", data)
+            await self.hass.async_block_till_done()
+            self.assertEqual(len(fired), 1)
+            detach_trigger()
             remove_listener()
             coordinator.async_set_update_error(UpdateFailed("test failure"))
             await self.hass.async_block_till_done()
