@@ -7,7 +7,6 @@ only received audio is converted to AAC for Home Assistant's stream component.
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
@@ -22,10 +21,9 @@ from urllib.parse import urlsplit
 from .client import decrypt_play_info
 from .cloud_media import request_media
 from .errors import is_auth_error
+from .media_buffer import CHUNK_SIZE, FLVBootstrap, chunks
 from .media_protocol import DHAVFrames, HTTPMediaFeed, MediaError, rtp_payload
 
-_CHUNK = 32768
-_RING_BYTES = 4 * 1024 * 1024
 _END = None
 
 
@@ -58,9 +56,9 @@ class _Session:
         self.done = threading.Event()
         self.ready = threading.Event()
         self.clients = set()
-        self.ring = deque()
-        self.ring_bytes = 0
+        self.bootstrap = FLVBootstrap()
         self.idle_timer = None
+        self._idle_generation = 0
         self.thread = None
         self.feed = None
         self.process = None
@@ -79,8 +77,9 @@ class _Session:
             if self.idle_timer:
                 self.idle_timer.cancel()
                 self.idle_timer = None
+            self._idle_generation += 1
             self.clients.add(subscriber)
-            for chunk in self.ring:
+            for chunk in self.bootstrap.bootstrap():
                 subscriber.put_nowait(chunk)
             if self.thread is None:
                 self.thread = threading.Thread(target=self._run, name="dmss-camera", daemon=True)
@@ -91,9 +90,19 @@ class _Session:
         with self.lock:
             self.clients.discard(subscriber)
             if not self.clients and not self.stop_event.is_set() and self.idle_timer is None:
-                self.idle_timer = threading.Timer(self.manager.idle_timeout, self.stop)
+                self._idle_generation += 1
+                self.idle_timer = threading.Timer(
+                    self.manager.idle_timeout, self._stop_if_idle, (self._idle_generation,))
                 self.idle_timer.daemon = True
                 self.idle_timer.start()
+
+    def _stop_if_idle(self, generation):
+        """A cancelled timer already awaiting the lock must not stop a reopen."""
+        with self.lock:
+            if self.clients or generation != self._idle_generation:
+                return
+            self.idle_timer = None
+            self.stop()
 
     @staticmethod
     def _end(subscriber):
@@ -109,20 +118,17 @@ class _Session:
     def publish(self, chunk):
         if not chunk:
             return
-        slow = []
+        slow = set()
         with self.lock:
-            self.ring.append(chunk)
-            self.ring_bytes += len(chunk)
-            while self.ring and (self.ring_bytes > _RING_BYTES or len(self.ring) > 128):
-                self.ring_bytes -= len(self.ring.popleft())
-            for subscriber in self.clients:
-                try:
-                    subscriber.put_nowait(chunk)
-                except queue.Full:
-                    slow.append(subscriber)
-            for subscriber in slow:
-                self._end(subscriber)
-                self.clients.discard(subscriber)
+            for packet in self.bootstrap.feed(chunk):
+                for block in chunks(packet):
+                    for subscriber in tuple(self.clients):
+                        try:
+                            subscriber.put_nowait(block)
+                        except queue.Full:
+                            self._end(subscriber)
+                            self.clients.discard(subscriber)
+                            slow.add(subscriber)
         for subscriber in slow:
             self.detach(subscriber)
 
@@ -221,7 +227,7 @@ class _Session:
                 self.manager.coordinator.entry.async_start_reauth, self.manager.hass)
 
     def _recover_feed(self, remaining):
-        """Keep the same MPEG-TS consumer through a bounded receive reconnect."""
+        """Keep the same local consumer through a bounded receive reconnect."""
         if self.feed:
             self.feed.close()
         while remaining > 0:
@@ -287,8 +293,10 @@ class _Session:
                 "-f", "dhav", "-i", "pipe:0",
                 "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy",
                 "-c:a", "aac", "-b:a", "96k", "-ar", "16000", "-ac", "1",
-                "-mpegts_flags", "resend_headers+pat_pmt_at_frames",
-                "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts", "pipe:1",
+                # FLV announces H264/AAC codec configuration immediately;
+                # HomeKit's unmodified FFmpeg otherwise probes TS for ~5s.
+                "-flvflags", "no_duration_filesize", "-flush_packets", "1",
+                "-f", "flv", "pipe:1",
                 "-map", "0:v:0", "-an", "-vf", "fps=1/2", "-threads", "1",
                 "-c:v", "mjpeg", "-q:v", "1", "-f", "image2pipe", f"pipe:{jpeg_write}",
             ]
@@ -306,7 +314,7 @@ class _Session:
             self.ready.set()
             self.manager._set_error(self.key, None)
             while not self.stop_event.is_set():
-                chunk = self.process.stdout.read1(_CHUNK)
+                chunk = self.process.stdout.read1(CHUNK_SIZE)
                 if not chunk:
                     break
                 self.publish(chunk)
@@ -382,7 +390,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         self.send_response(200)
-        self.send_header("Content-Type", "video/mp2t")
+        self.send_header("Content-Type", "video/x-flv")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
 
@@ -398,7 +406,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self.send_error(503, "Camera media unavailable")
                 return
             self.send_response(200)
-            self.send_header("Content-Type", "video/mp2t")
+            self.send_header("Content-Type", "video/x-flv")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close")
             self.end_headers()
@@ -470,7 +478,7 @@ class DMSSMediaManager:
         key = (serial, channel)
         with self.lock:
             if key not in self._urls:
-                path = f"/{self._capability}/{secrets.token_urlsafe(12)}.ts"
+                path = f"/{self._capability}/{secrets.token_urlsafe(12)}.flv"
                 self._routes[path] = key
                 self._urls[key] = f"http://127.0.0.1:{self._server.server_port}{path}"
             return self._urls[key]

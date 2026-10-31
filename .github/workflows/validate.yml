@@ -51,3 +51,4 @@ jobs:
       - run: python -m unittest discover -s tests -p test_homeassistant.py
       - run: python -m unittest discover -s tests -p test_camera.py
       - run: python -m unittest discover -s tests -p test_media.py
+      - run: python -m unittest discover -s tests -p test_media_buffer.py

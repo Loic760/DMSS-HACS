@@ -2,7 +2,10 @@
 
 DMSS is a Home Assistant custom integration for HACS. Version 0.3.0 adds on-demand HD cameras with received audio. Email/password setup, automatic session recovery, all three unlock buttons and doorbell events remain available.
 
-Version 0.3.1 explicitly declares the HACS repository layout, enables README rendering, and adds official HACS repository validation to CI. Integration behavior is unchanged.
+Version 0.3.2 improves HomeKit startup and reopening with a faster local container,
+decodable keyframe caching, and a fix for a cancelled shutdown timer interrupting
+a reopened stream. HACS layout metadata and official repository validation from
+0.3.1 remain included.
 
 ## Install
 
@@ -110,7 +113,7 @@ The integration requests **main stream0 (HD)**. Both entrances were live-verifie
 at **1280×720 H264**, with no resize or video re-encoding. That is the highest
 configured main profile exposed by the tested installation; capability queries
 did not expose a higher sensor resolution. Original video is copied into a local
-MPEG-TS feed, while received16kHz mono PCM is converted to AAC so HA can play it.
+FLV feed, while received16kHz mono PCM is converted to AAC so HA can play it.
 Home Assistant's stream component supports AAC/MP3 rather than raw PCM.
 [Stream documentation](https://www.home-assistant.io/integrations/stream/)
 
@@ -206,6 +209,27 @@ homekit:
 camera capacity. These local viewers use the shared upstream. Pair both accessory
 codes in Apple Home. Actual Apple TV pairing remains untested.
 [Official HomeKit camera settings](https://www.home-assistant.io/integrations/homekit/)
+
+### HomeKit startup and reopening
+
+Version 0.3.2 uses a local FLV container that announces H264/AAC codec headers
+early. In an offline replay of the same saved 720p camera recording, an FFmpeg
+consumer using HomeKit's default input probing sent its first video RTP packet
+in approximately **1.5 seconds**, versus **5 seconds** with the previous MPEG-TS
+container. These measurements exclude cloud lease acquisition and connection
+setup; they are not an Apple Home or remote-viewing latency guarantee.
+
+A viewer joining an active feed receives codec headers and the newest complete
+keyframe group. Older history is discarded. A cancelled idle timer cannot stop
+a reopened session. Offline regression tests verify cold starts, a second viewer
+sharing the source, and reopening after shutdown, including decodable H264 video
+and Opus audio output. HA's PyAV decoder is checked separately.
+
+After updating from 0.3.1, restart Home Assistant. Keep the existing camera entity
+IDs, HomeKit pairing and YAML settings (`video_codec: copy`, `support_audio: true`,
+`audio_codec: libopus`). Leave Preload stream off. The update does not keep a
+camera connection open while idle; the installed Apple Home setup still needs
+the owner's startup/reopen confirmation after updating.
 
 ## Apple Home / HomeKit Bridge — existing buttons
 
