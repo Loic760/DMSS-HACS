@@ -7,24 +7,28 @@ only received audio is converted to AAC for Home Assistant's stream component.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 import queue
 import re
+import select
 import secrets
+import socket
 import struct
 import subprocess
 import threading
+import time
 from urllib.parse import urlsplit
 
-from .client import decrypt_play_info
 from .cloud_media import request_media
 from .errors import is_auth_error
 from .media_buffer import CHUNK_SIZE, FLVBootstrap, chunks
 from .media_protocol import DHAVFrames, HTTPMediaFeed, MediaError, rtp_payload
 
 _END = None
+_LOGGER = logging.getLogger(__name__)
 
 
 def normalize_dhav_date(frame, date):
@@ -68,6 +72,9 @@ class _Session:
         self.audio_frames = 0
         self.reconnects = 0
         self._reauth_requested = False
+        self.started_at = time.monotonic()
+        self.first_output_at = None
+        self.phase = "starting"
 
     def attach(self):
         subscriber = queue.Queue(maxsize=256)
@@ -129,6 +136,10 @@ class _Session:
                             self._end(subscriber)
                             self.clients.discard(subscriber)
                             slow.add(subscriber)
+            if self.bootstrap.ring:
+                if self.first_output_at is None:
+                    self.first_output_at = time.monotonic()
+                self.phase = "streaming"
         for subscriber in slow:
             self.detach(subscriber)
 
@@ -196,6 +207,7 @@ class _Session:
         """Reload independently renewable credentials before each connection."""
         if self.stop_event.is_set():
             return False
+        self.phase = "credentials"
         self.future = asyncio.run_coroutine_threadsafe(
             self.manager.coordinator.async_call(self.manager._acquire, *self.key),
             self.manager.hass.loop,
@@ -207,6 +219,7 @@ class _Session:
                              timeout=10, tls=credentials.tls)
         # Publish before connecting so stop() can close a pending handshake.
         self.feed = feed
+        self.phase = "connecting"
         try:
             feed.connect()
             feed.sock = feed.sock.sock  # Aggregate deadline bounds startup only.
@@ -292,6 +305,9 @@ class _Session:
                 "-probesize", "1000000", "-analyzeduration", "1000000",
                 "-f", "dhav", "-i", "pipe:0",
                 "-map", "0:v:0", "-map", "0:a:0?", "-c:v", "copy",
+                # Vendor audio timestamps can overlap decoded sample blocks.
+                # AAC -> HomeKit Opus must receive one continuous sample clock.
+                "-af", "aresample=async=1:first_pts=0,asetpts=N/SR/TB",
                 "-c:a", "aac", "-b:a", "96k", "-ar", "16000", "-ac", "1",
                 # FLV announces H264/AAC codec configuration immediately;
                 # HomeKit's unmodified FFmpeg otherwise probes TS for ~5s.
@@ -302,6 +318,7 @@ class _Session:
             ]
             self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                             stderr=subprocess.PIPE, pass_fds=(jpeg_write,))
+            self.phase = "converting"
             os.close(jpeg_write)
             jpeg_write = None
             snapshot_thread = threading.Thread(target=self._snapshots, args=(jpeg_read,), daemon=True)
@@ -340,6 +357,7 @@ class _Session:
                     self._end(subscriber)
                 self.clients.clear()
             self.manager._set_error(self.key, self.error)
+            self.phase = "stopped"
             self.done.set()
 
     def _close_process_pipes(self):
@@ -385,6 +403,24 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         return self.server.manager._routes.get(urlsplit(self.path).path)
 
+    def _client_closed(self):
+        """Notice a cancelled HomeKit GET even before cloud startup finishes."""
+        try:
+            readable, _, _ = select.select([self.connection], [], [], 0)
+            return bool(readable) and self.connection.recv(1, socket.MSG_PEEK) == b""
+        except OSError:
+            return True
+
+    def _wait_ready(self, session):
+        # Waiting once for 30s retains abandoned consumers during a cold
+        # cloud login/handshake. A quick reopen then attaches to that old start.
+        for _ in range(300):
+            if self.server.manager.closed or self._client_closed():
+                return False
+            if session.ready.wait(.1):
+                return not session.error and not session.stop_event.is_set()
+        return False
+
     def do_HEAD(self):
         if self._route() is None:
             self.send_error(404)
@@ -402,7 +438,7 @@ class _Handler(BaseHTTPRequestHandler):
         session = subscriber = None
         try:
             session, subscriber = self.server.manager._subscribe(key)
-            if not session.ready.wait(timeout=30) or session.error:
+            if not self._wait_ready(session):
                 self.send_error(503, "Camera media unavailable")
                 return
             self.send_response(200)
@@ -451,11 +487,9 @@ class DMSSMediaManager:
         client = self.coordinator.client
         lease = request_media(client, serial, channel, stream=0, protocol="http",
                               route="legacy", encrypt_mode=0)
-        device = client.select_device(serial)
-        info = decrypt_play_info(device["playInfo"], serial)
         secure = bool(lease.tls_url)
         return _Credentials(lease.tls_url if secure else lease.url,
-                            info["devLoginName"], info["devLoginPassword"], secure)
+                            lease.device_username, lease.device_password, secure)
 
     def _ensure_server(self):
         with self.lock:
@@ -498,6 +532,30 @@ class DMSSMediaManager:
     def _set_error(self, key, error):
         with self.lock:
             self._errors[key] = error
+        if error:
+            door = {1: "front", 2: "back"}.get(key[1], "unknown")
+            # These are fixed internal messages, never provider text or URLs.
+            _LOGGER.warning("DMSS %s camera: %s", door, error)
+
+    def diagnostics(self):
+        """Expose startup/lifecycle facts without identities or media secrets."""
+        with self.lock:
+            result = []
+            for key, session in self._sessions.items():
+                with session.lock:
+                    result.append({
+                        "entrance": {1: "front", 2: "back"}.get(key[1], "unknown"),
+                        "phase": session.phase,
+                        "viewers": len(session.clients),
+                        "video_frames": session.video_frames,
+                        "audio_frames": session.audio_frames,
+                        "reconnects": session.reconnects,
+                        "startup_seconds": (round(session.first_output_at - session.started_at, 3)
+                                            if session.first_output_at is not None else None),
+                        "converter_exit_code": session.process.poll() if session.process else None,
+                        "error": session.error,
+                    })
+            return result
 
     def _subscribe(self, key):
         with self.lock:

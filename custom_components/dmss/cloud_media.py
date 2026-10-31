@@ -26,6 +26,8 @@ class MediaLease:
     url: str = field(repr=False)
     tls_url: str = field(default="", repr=False)
     protocol: str = 'rtsp'
+    device_username: str = field(default="", repr=False)
+    device_password: str = field(default="", repr=False)
 
     def probe(self, timeout=15):
         """Independently inspect codecs with FFmpeg; protect signed URLs."""
@@ -163,4 +165,8 @@ PCS signature than the door-control API. No result is persisted or printed.
     url,tls_url=normalized
     if not url:
         raise CloudMediaError("Cloud media returned no stream URL")
-    return MediaLease(kind, url, tls_url,protocol)
+    # Carry credentials from this same fresh inventory response. A second
+    # inventory lookup adds a cloud round trip and can change the credential
+    # generation between lease acquisition and the media handshake.
+    return MediaLease(kind, url, tls_url, protocol,
+                      info.get("devLoginName", ""), info.get("devLoginPassword", ""))

@@ -14,6 +14,7 @@ async def async_get_config_entry_diagnostics(hass, entry):
         "incoming_call_poll_connections": sum(bool(getattr(feed,'call_state_poll_supported',False)) for feed in coordinator.bells.feeds.values()),
         "call_state_poll_interval_seconds": 1,
         "bell_transport": "local_native_push",
+        "camera_sessions": coordinator.media.diagnostics() if coordinator.media else [],
         "last_update_success": coordinator.last_update_success,
         "auth_method": "web",
         "session_storage": "memory_only",

@@ -2,9 +2,10 @@
 
 DMSS is a Home Assistant custom integration for HACS. Version 0.3.0 adds on-demand HD cameras with received audio. Email/password setup, automatic session recovery, all three unlock buttons and doorbell events remain available.
 
-Version 0.3.3 adds separate incoming-ring entities for HomeKit doorbell
-notifications. Connected, ended and missed calls do not ring HomeKit. The HD
-startup and reopening improvements from 0.3.2 remain included.
+Version 0.3.4 fixes overlapping audio timestamps during HomeKit conversion,
+releases cancelled cold starts promptly, and removes a redundant cloud lookup
+from startup. The ring-only HomeKit entities from 0.3.3 and on-demand HD video
+remain included.
 
 ## Install
 
@@ -262,6 +263,33 @@ doorbell rings, which can open an on-demand stream. Leave Preload stream off.
 [HomeKit doorbell configuration](https://www.home-assistant.io/integrations/homekit/#doorbell-button-notifications)
 
 ### HomeKit startup and reopening
+
+Version 0.3.4 corrects the audio clock before AAC/Opus conversion. Device audio
+timestamps can increase while still overlapping the samples in the preceding
+packet; this produced HomeKit FFmpeg's `Queue input is backward in time` warning.
+The warning was reproduced using a saved real HD recording and eliminated with
+sample-clock normalization. Resampling handles clock gaps; original H264 video
+is still copied without resizing or re-encoding.
+
+When a HomeKit viewer cancels before cloud startup completes, the bridge now
+detects the closed HTTP client instead of retaining it for up to 30 seconds.
+Cancellation keeps the shared account lock until an already-running HTTP
+request finishes, preventing a new start or renewal from racing it. Fresh device
+credentials travel with their media lease, avoiding a second inventory request.
+
+Tests use HA's actual HomeKit `start_stream`/`stop_stream`, video SRTP output,
+Opus audio proxy, overlapping native audio timestamps, and reopening the same
+ports after shutdown. Tests remain offline and do not pair an Apple device.
+These establish the corrected local path, not complete Apple Home reliability
+on every host. Earlier reported process exits occurred before debug logging;
+their individual exit causes were not captured.
+
+After updating to 0.3.4, restart Home Assistant and keep the current HomeKit YAML
+and pairing. No preload is needed. If a start still fails, enable HomeKit Bridge
+debug logging **before** reproducing the failure, then inspect the FFmpeg lines
+before the exit. DMSS diagnostics now include redacted per-entrance startup time,
+phase, frame counts, viewer count, converter exit status and fixed error messages.
+No device identifiers, account/session credentials or media URLs are included.
 
 Version 0.3.2 uses a local FLV container that announces H264/AAC codec headers
 early. In an offline replay of the same saved 720p camera recording, an FFmpeg

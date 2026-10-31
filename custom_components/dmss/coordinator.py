@@ -35,7 +35,19 @@ class DMSSCoordinator(DataUpdateCoordinator):
     async def async_call(self, method, *args, **kwargs):
         """Media and buttons must use this shared executor/lock boundary."""
         async with self.api_lock:
-            return await self.hass.async_add_executor_job(partial(method, *args, **kwargs))
+            job = asyncio.ensure_future(
+                self.hass.async_add_executor_job(partial(method, *args, **kwargs)))
+            try:
+                return await asyncio.shield(job)
+            except asyncio.CancelledError:
+                # Cancelling a camera start cannot cancel its running requests
+                # thread. Keep the session lock until that operation finishes,
+                # so a reopen/renewal never races the abandoned HTTP request.
+                try:
+                    await asyncio.shield(job)
+                except Exception:
+                    pass
+                raise
 
     async def _async_update_data(self):
         try:

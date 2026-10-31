@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 import unittest
 from unittest.mock import Mock, patch
 
@@ -24,6 +25,7 @@ from custom_components.dmss.media import (
 from custom_components.dmss.media_protocol import MediaError
 from custom_components.dmss.media_protocol import rtp_payload
 from custom_components.dmss.client import APIError
+from custom_components.dmss.cloud_media import MediaLease
 
 
 def dhav(payload, kind, sequence, millis, extra=b"", date=0x6aa80000):
@@ -65,7 +67,7 @@ class _RTPViewer:
             f"rtp://127.0.0.1:{self.audio.getsockname()[1]}?pkt_size=188"],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
-    def receive(self):
+    def receive(self, frame_count=12):
         deadline = time.monotonic() + 6
         timestamps = set()
         bitstream = bytearray()
@@ -97,22 +99,23 @@ class _RTPViewer:
                     bitstream.extend(b"\0\0\0\1" + payload)
                 if packet[1] & 128:
                     timestamps.add(struct.unpack_from("!I", packet, 4)[0])
-            if len(timestamps) >= 12 and audio_packets:
+            if len(timestamps) >= frame_count and audio_packets:
                 return first_video, bytes(bitstream), len(timestamps), audio_packets
         raise AssertionError("Local HomeKit-style consumer did not receive video and audio")
 
     def close(self):
         self.process.terminate()
         try:
-            self.process.communicate(timeout=2)
+            _, error = self.process.communicate(timeout=2)
         except subprocess.TimeoutExpired:
             self.process.kill()
-            self.process.communicate()
+            _, error = self.process.communicate()
+        self.stderr = error.decode(errors="replace")
         self.video.close()
         self.audio.close()
 
 
-def camera_packets(seconds=4):
+def camera_packets(seconds=4, audio_jitter=False):
     """Generate the real device's H264/PCM framing without accessing a device."""
     encoded = subprocess.run([
         "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=64x48:rate=20",
@@ -131,6 +134,8 @@ def camera_packets(seconds=4):
         items.append((ms, 96, frame))
     for number in range(seconds * 25):
         ms = number * 40
+        if audio_jitter and number > 5 and number % 4 == 0:
+            ms -= 20  # Monotonic timestamps, but overlapping PCM sample blocks.
         payload = struct.pack("<640h", *[1000 if (n + number * 640) % 32 < 16 else -1000
                                          for n in range(640)])
         items.append((ms, 97, dhav(payload, 0xf0, number, ms,
@@ -247,6 +252,20 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(session.bootstrap.ring_chunks, 128)
         session.stop()
 
+    async def test_media_diagnostics_report_facts_without_device_identity_or_secrets(self):
+        key = ("private-device-serial", 1)
+        session = _Session(self.manager, key)
+        self.manager._sessions[key] = session
+        session.phase = "streaming"
+        session.first_output_at = session.started_at + 1.25
+        session.video_frames = 12
+        data = self.manager.diagnostics()
+        self.assertEqual(data[0]["entrance"], "front")
+        self.assertEqual(data[0]["startup_seconds"], 1.25)
+        self.assertEqual(data[0]["video_frames"], 12)
+        self.assertNotIn("private-device-serial", json.dumps(data))
+        self.assertNotIn(self.manager._capability, json.dumps(data))
+
     async def test_cancelled_idle_timer_cannot_stop_reopened_or_newer_session(self):
         session = _Session(self.manager, ("test-only", 1))
         session.thread = Mock()  # Exercise attachment without opening any feed.
@@ -279,17 +298,65 @@ class MediaTests(unittest.IsolatedAsyncioTestCase):
     async def test_main_stream_credentials_are_refreshed_without_secret_repr(self):
         client = self.coordinator.client
         client.select_device.return_value = {"playInfo": "encrypted-only"}
-        lease = SimpleNamespace(url="http://example.invalid/signed-secret",
-                                tls_url="https://example.invalid/signed-secret")
-        with patch("custom_components.dmss.media.request_media", return_value=lease) as acquire, \
-                patch("custom_components.dmss.media.decrypt_play_info", return_value={
-                    "devLoginName": "private-user", "devLoginPassword": "private-password"}):
+        lease = MediaLease("real", "http://example.invalid/signed-secret",
+            "https://example.invalid/signed-secret", "http", "private-user", "private-password")
+        with patch("custom_components.dmss.media.request_media", return_value=lease) as acquire:
             result = self.manager._acquire("test-only", 2)
         acquire.assert_called_once_with(client, "test-only", 2, stream=0, protocol="http",
                                         route="legacy", encrypt_mode=0)
         self.assertTrue(result.tls)
+        client.select_device.assert_not_called()
+        self.assertEqual((result.username, result.password), ("private-user", "private-password"))
+        self.assertNotIn("private-user", repr(lease))
+        self.assertNotIn("private-password", repr(lease))
         self.assertNotIn("private-password", repr(result))
         self.assertNotIn("signed-secret", repr(result))
+
+    async def test_cancelled_http_start_releases_consumer_and_next_open_is_fresh(self):
+        url = await self.manager.async_stream_source("test-only", 1)
+        address = urlsplit(url)
+        started = threading.Event()
+        def cold_start(session):
+            started.set()
+            session.stop_event.wait(3)
+            session.ready.set()
+            session.done.set()
+        with patch.object(_Session, "_run", cold_start):
+            for _ in range(2):
+                started.clear()
+                sock = socket.create_connection((address.hostname, address.port), 1)
+                sock.sendall(f"GET {address.path} HTTP/1.1\r\nHost: {address.netloc}\r\n\r\n".encode())
+                self.assertTrue(await asyncio.to_thread(started.wait, 1))
+                session = self.manager._sessions[("test-only", 1)]
+                sock.close()
+                self.assertTrue(await asyncio.to_thread(session.done.wait, 1))
+                self.assertEqual(session.clients, set())
+                if _ == 0:
+                    first = session
+                else:
+                    self.assertIsNot(session, first)
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg unavailable")
+    async def test_overlapping_native_audio_timestamps_do_not_break_homekit_opus(self):
+        packets = await asyncio.to_thread(camera_packets, 6, True)
+        feeds = []
+        self.manager._acquire = Mock(return_value=_Credentials("http://example.invalid/test", "dummy", "dummy", False))
+        url = await self.manager.async_stream_source("test-only", 1)
+        viewer = None
+        try:
+            with patch("custom_components.dmss.media.HTTPMediaFeed", synthetic_feed(packets, feeds)):
+                viewer = await asyncio.to_thread(_RTPViewer, url)
+                _first, _video, frames, audio = await asyncio.to_thread(viewer.receive, 50)
+                self.assertGreaterEqual(frames, 50)
+                self.assertGreater(audio, 0)
+                await asyncio.to_thread(viewer.close)
+                self.assertNotIn("backward in time", viewer.stderr)
+                self.assertNotIn("Non-monotonic", viewer.stderr)
+                viewer = None
+        finally:
+            if viewer is not None:
+                await asyncio.to_thread(viewer.close)
+            await self.manager.async_close()
 
     async def test_dhav_date_normalization_keeps_payload_and_ticks(self):
         frame = dhav(b"unaltered-encoded-payload", 0xf0, 4, 1240, b"\x83\x01\x10\x04", date=123)

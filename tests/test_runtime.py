@@ -117,6 +117,30 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(*(coordinator.async_call(operation) for _ in range(4)))
         self.assertEqual(high_water, 1)
 
+    async def test_cancelled_start_holds_api_lock_until_http_thread_finishes(self):
+        coordinator = runtime.DMSSCoordinator(Hass(), Entry(), object())
+        started, release, finished, reopened = (threading.Event() for _ in range(4))
+        def cold_start():
+            started.set()
+            release.wait(2)
+            finished.set()
+        def reopen():
+            self.assertTrue(finished.is_set())
+            reopened.set()
+        first = asyncio.create_task(coordinator.async_call(cold_start))
+        self.assertTrue(await asyncio.to_thread(started.wait, 1))
+        first.cancel()
+        second = asyncio.create_task(coordinator.async_call(reopen))
+        try:
+            await asyncio.sleep(.05)
+            self.assertFalse(reopened.is_set())
+        finally:
+            release.set()
+        with self.assertRaises(asyncio.CancelledError):
+            await first
+        await second
+        self.assertTrue(reopened.is_set())
+
     async def test_unlisted_primary_disabled_prevents_any_request(self):
         class Client:
             def unlock(self, *args, **kwargs):
