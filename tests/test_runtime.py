@@ -48,6 +48,13 @@ class Coordinator:
         self.error = error
 
 
+_STUB_NAMES = (
+    "homeassistant", "homeassistant.config_entries", "homeassistant.core",
+    "homeassistant.exceptions", "homeassistant.helpers", "homeassistant.helpers.event",
+    "homeassistant.helpers.update_coordinator",
+)
+_ORIGINAL_MODULES = {name: sys.modules.get(name) for name in _STUB_NAMES}
+
 module("homeassistant")
 module("homeassistant.config_entries", ConfigEntry=object)
 module("homeassistant.core", HomeAssistant=object)
@@ -69,6 +76,14 @@ const = load("const")
 client_module = load("client")
 errors = load("errors")
 runtime = load("coordinator")
+
+# The loaded runtime keeps its explicit fake classes, but later tests must see
+# the real HA package. This also permits running all suites in one process.
+for _name, _original in _ORIGINAL_MODULES.items():
+    if _original is None:
+        sys.modules.pop(_name, None)
+    else:
+        sys.modules[_name] = _original
 
 
 class Hass:

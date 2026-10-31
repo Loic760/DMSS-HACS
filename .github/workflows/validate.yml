@@ -7,16 +7,36 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        homeassistant: ['2026.9.4', '2026.10.1']
+        homeassistant: ['2026.9.4', '2026.10.4']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
-      - run: pip install homeassistant==${{ matrix.homeassistant }} requests==2.34.2 'cryptography>=48.0.1,<51' ruff
+      - name: Install FFmpeg for media validation
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+      - run: pip install homeassistant==${{ matrix.homeassistant }} requests==2.34.2 'cryptography>=48.0.1,<51' 'pyOpenSSL>=26.2,<27' ruff
+      - name: Install matching camera component dependencies
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import subprocess
+          import sys
+          import homeassistant
+          base = Path(homeassistant.__file__).parent / 'components'
+          requirements = set()
+          for component in ('camera', 'stream', 'ffmpeg'):
+              requirements.update(json.loads((base / component / 'manifest.json').read_text()).get('requirements', []))
+          subprocess.run([sys.executable, '-m', 'pip', 'install', *sorted(requirements)], check=True)
+          PY
       - run: ruff check custom_components --select F
       - run: python -m unittest discover -s tests -p test_client.py
       - run: python -m unittest discover -s tests -p test_web_auth.py
       - run: python -m unittest discover -s tests -p test_runtime.py
       - run: python -m unittest discover -s tests -p test_bell.py
       - run: python -m unittest discover -s tests -p test_homeassistant.py
+      - run: python -m unittest discover -s tests -p test_camera.py
+      - run: python -m unittest discover -s tests -p test_media.py

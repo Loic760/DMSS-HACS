@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntries
 from homeassistant import loader
+from homeassistant.auth import auth_manager_from_config
+from homeassistant.components.http.server import HomeAssistantHTTP
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.helpers import entity_registry, device_registry, area_registry
@@ -60,6 +62,9 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         await device_registry.async_load(self.hass)
         await entity_registry.async_load(self.hass)
         await area_registry.async_load(self.hass)
+        # Camera/stream setup loads HTTP, whose real auth manager needs the
+        # device registry. Its HTTP listener uses an ephemeral local port.
+        self.hass.auth = await auth_manager_from_config(self.hass, [], [])
         folder = Path(__file__).resolve().parents[1] / "custom_components" / "dmss"
         self.hass.data[loader.DATA_CUSTOM_COMPONENTS] = {"dmss": loader.Integration(
             self.hass, "custom_components.dmss", folder, json.loads((folder / "manifest.json").read_text()),
@@ -67,11 +72,25 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         client = Mock()
         client.devices.return_value = [{"deviceId": "test-device", "name": "Test interphone",
                                        "deviceCatalog": "VTH", "devType": 21,
-                                       "deviceChannels": [{"channelCatalog": "VTO"}]}]
+                                       "deviceChannels": [
+                                           {"channelCatalog": "VTH", "channelId": "0", "onlineStatus": 1},
+                                           {"channelCatalog": "VTO", "channelId": "1", "onlineStatus": 1},
+                                           {"channelCatalog": "VTO", "channelId": "2", "onlineStatus": 1},
+                                       ]}]
         client.doors.return_value = {"locks": [{"channel": channel, "door_index": relay,
                                                 "door_name": name} for name, channel, relay in
                                                [("front", 1, 0), ("back", 2, 0), ("back", 2, 1)]]}
-        with patch("custom_components.dmss.DMSSClient", return_value=client):
+        original_create_server = HomeAssistantHTTP._async_create_server
+
+        async def isolated_http_server(server):
+            # Exercise real component setup without claiming a normal HA port
+            # or binding an external interface on the developer's computer.
+            server.server_host = ["127.0.0.1"]
+            server.server_port = 0
+            return await original_create_server(server)
+
+        with patch("custom_components.dmss.DMSSClient", return_value=client), \
+                patch.object(HomeAssistantHTTP, "_async_create_server", isolated_http_server):
             await self.hass.config_entries.async_add(self.entry)
             await self.hass.async_block_till_done()
             ids = sorted(s.entity_id for s in self.hass.states.async_all("button"))
@@ -81,6 +100,10 @@ class HomeAssistantTests(unittest.IsolatedAsyncioTestCase):
                 "entity_id": "button.unlock_building_front_1"}, blocking=True)
             client.unlock.assert_called_once()
             coordinator = self.hass.data["dmss"][self.entry.entry_id]
+            camera_ids = sorted(state.entity_id for state in self.hass.states.async_all("camera"))
+            self.assertEqual(camera_ids, ["camera.building_back", "camera.building_front"])
+            self.assertEqual(coordinator.media._sessions, {})
+            self.assertIsNone(coordinator.media._server)
             event_ids = sorted(s.entity_id for s in self.hass.states.async_all("event"))
             self.assertEqual(event_ids, ["event.building_doorbell_back", "event.building_doorbell_front",
                                          "event.building_doorbell_unknown"])

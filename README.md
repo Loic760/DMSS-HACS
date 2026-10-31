@@ -1,6 +1,6 @@
 # DMSS HACS integration
 
-DMSS is a Home Assistant custom integration for HACS. Version 0.2.2 provides email/password setup through the official DMSS desktop login, automatic session recovery, and door-release controls compatible with HomeKit Bridge.
+DMSS is a Home Assistant custom integration for HACS. Version 0.3.0 adds on-demand HD cameras with received audio. Email/password setup, automatic session recovery, all three unlock buttons and doorbell events remain available.
 
 ## Install
 
@@ -74,7 +74,115 @@ After updating, restart Home Assistant. The existing automation filtered to `typ
 
 Protocol references: [Dahua native/RPC implementation](https://github.com/rroller/dahua), [VTO/VTH event meanings](https://github.com/myhomeiot/DahuaVTO). The protocol implementation is independent and contains no copied credentials or device addresses.
 
-## Apple Home / HomeKit Bridge
+## HD cameras with audio
+
+After updating and restarting Home Assistant, the existing DMSS entry adds:
+
+- `camera.building_front`
+- `camera.building_back`
+
+The integration requests **main stream0 (HD)**. Both entrances were live-verified
+at **1280×720 H264**, with no resize or video re-encoding. That is the highest
+configured main profile exposed by the tested installation; capability queries
+did not expose a higher sensor resolution. Original video is copied into a local
+MPEG-TS feed, while received16kHz mono PCM is converted to AAC so HA can play it.
+Home Assistant's stream component supports AAC/MP3 rather than raw PCM.
+[Stream documentation](https://www.home-assistant.io/integrations/stream/)
+
+Both real cameras produced video plus AAC through the installable integration's
+media manager. Two-second received-audio samples were non-silent but very quiet;
+speech audibility and physical Apple TV/iPhone pairing need owner observation.
+This is listening audio; it does not transmit a microphone or establish a call.
+The indoor interphone has no camera.
+
+### Starts when viewed, not24/7
+
+Leave each camera's **Preload stream off**. Live viewing opens the cloud feed;
+an idle integration opens none. Home Assistant can retain an HLS worker for
+approximately30 seconds after the last viewer; the bridge releases its source
+after the last consumer disconnects, with a short idle grace. A dashboard card
+configured for continuous live viewing, recording, another consumer, or Preload
+can keep the connection active. It is based on connected consumers, not whether
+a person is physically looking at the screen.
+[Camera/preload documentation](https://www.home-assistant.io/integrations/camera/)
+
+Thumbnails use only the most recently cached full-resolution frame; thumbnail
+refreshes never start another camera connection. Before the first live view
+there may be no thumbnail, and an idle thumbnail can be stale. Open the camera
+to refresh it. Capturing the cache does not open a second cloud session.
+
+Each new or recovered connection refreshes the media lease and device
+credentials through the integration's shared renewal lock. Read failures use a
+bounded reconnect while retaining the same local player. Verification/locked
+account failures request reauthentication. Expiry recovery is fault-injection
+tested; a full live token-lifetime test would exceed the authorized15-second
+camera session allowance.
+
+### Concurrent viewers and device impact
+
+HA and HomeKit viewers of the **same entrance** share one upstream connection
+inside this integration. Separate front/back feeds need separate connections.
+The sharing and cleanup behavior are tested; the physical installation's maximum
+concurrent cloud streams and interaction with a separate DMSS phone are not.
+Another phone uses its own session, so resource/account limits could make a view
+busy, fail or affect an existing view. No guarantee of unlimited physical viewers
+is made.
+
+A preview is an active viewing session and consumes bandwidth/device resources.
+It sends no unlock, call-answer, hang-up or microphone commands. It can still be
+logged by the device/cloud, and firmware may show a viewing/busy indicator. Those
+physical indicators were not observed during development; viewing is not promised
+invisible or free of impact on other users.
+
+### HomeKit camera accessories
+
+Keep the existing unlock-button bridge. Add each camera in a separate HomeKit
+**accessory-mode** instance. This is independent of the button bridge. Set
+`support_audio: true`; `video_codec: copy` preserves compatible original H264.
+HomeKit converts the received audio to its supported Opus profile. If managing
+HomeKit in YAML, merge these entries into your existing `homekit:` list, using
+unused ports; do not replace your current button bridge:
+
+```yaml
+homekit:
+  - name: Building Front Camera
+    port: 21071
+    mode: accessory
+    filter:
+      include_entities:
+        - camera.building_front
+    entity_config:
+      camera.building_front:
+        support_audio: true
+        video_codec: copy
+        audio_codec: libopus
+        max_width: 1280
+        max_height: 720
+        max_fps: 25
+        stream_count: 3
+  - name: Building Back Camera
+    port: 21072
+    mode: accessory
+    filter:
+      include_entities:
+        - camera.building_back
+    entity_config:
+      camera.building_back:
+        support_audio: true
+        video_codec: copy
+        audio_codec: libopus
+        max_width: 1280
+        max_height: 720
+        max_fps: 25
+        stream_count: 3
+```
+
+`stream_count` advertises a HomeKit viewer limit; it is not proof of physical
+camera capacity. These local viewers use the shared upstream. Pair both accessory
+codes in Apple Home. Actual Apple TV pairing remains untested.
+[Official HomeKit camera settings](https://www.home-assistant.io/integrations/homekit/)
+
+## Apple Home / HomeKit Bridge — existing buttons
 
 Home Assistant's HomeKit Bridge supports `button` entities as momentary switches. Switching one on presses it once and the bridge resets it. This matches a door-release pulse. See the [official supported integrations](https://www.home-assistant.io/integrations/homekit/#supported-integrations).
 
@@ -115,9 +223,9 @@ Email and password are stored in the Home Assistant config entry. Session and de
 
 ## Validation and scope
 
-The client was tested against the actual account and installation. The two primary door releases were physically confirmed by the installation owner. Home Assistant 2026.9.4 and 2026.10.1 tests verify setup, all three exact entity IDs, one-shot button dispatch, unavailable states, authentication error handling, and unloading. CI checks both Home Assistant versions. Protocol tests cover independent renewal, expired sessions, credential rejection, signatures, and non-replayed ambiguous commands.
+The client was tested against the actual account and installation. The two primary door releases were physically confirmed by the installation owner. Home Assistant 2026.9.4 and2026.10.4 (latest stable checked October31,2026) tests cover setup, all three exact button IDs, camera IDs, one-shot button dispatch, unavailable states, authentication handling, lazy media and unloading. CI checks both versions with their matching component dependencies. Protocol tests cover independent renewal, expired sessions, credential rejection, signatures, and non-replayed ambiguous commands.
 
-This version provides account/door controls and doorbell event handling. Camera and two-way audio remain separate local work and are not included in this release.
+Cloud HD video and received audio are included. Outdoor two-way microphone audio is not part of this camera release. Camera connections and FFmpeg processes close when idle/unloaded. No Mac, local Vite server, APK or separate bridge add-on is needed on the HA host; the integration starts its loopback media bridge itself. Home Assistant's FFmpeg and stream dependencies must be available.
 
 Development checks (run each suite separately):
 
@@ -127,5 +235,7 @@ python -m unittest discover -s tests -p test_web_auth.py
 python -m unittest discover -s tests -p test_runtime.py
 python -m unittest discover -s tests -p test_bell.py
 python -m unittest discover -s tests -p test_homeassistant.py
+python -m unittest discover -s tests -p test_camera.py
+python -m unittest discover -s tests -p test_media.py
 ruff check custom_components --select F
 ```

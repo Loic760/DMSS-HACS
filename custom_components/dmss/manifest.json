@@ -1,7 +1,7 @@
 {
   "domain": "dmss",
   "name": "DMSS",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "config_flow": true,
   "documentation": "https://github.com/Loic760/DMSS-HACS",
   "issue_tracker": "https://github.com/Loic760/DMSS-HACS/issues",
@@ -11,7 +11,9 @@
   "iot_class": "cloud_polling",
   "requirements": [
     "requests==2.34.2",
-    "cryptography>=48.0.1,<51"
+    "cryptography>=48.0.1,<51",
+    "pyOpenSSL>=26.2,<27"
   ],
+  "dependencies": ["ffmpeg", "stream"],
   "integration_type": "hub"
 }

@@ -15,6 +15,9 @@ async def async_setup_entry(hass, entry: ConfigEntry):
                         password_provider=lambda _account: password)
     coordinator = DMSSCoordinator(hass, entry, client)
     try:
+        from .media import DMSSMediaManager
+
+        coordinator.media = DMSSMediaManager(hass, coordinator)
         await coordinator.async_call(client.login, password)
         await coordinator.async_config_entry_first_refresh()
     except Exception as error:

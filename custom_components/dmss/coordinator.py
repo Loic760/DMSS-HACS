@@ -27,6 +27,8 @@ class DMSSCoordinator(DataUpdateCoordinator):
         self.entry = entry
         self.client = client
         self.api_lock = asyncio.Lock()
+        # Set by config-entry setup. Merely loading inventory does not open media.
+        self.media = None
         self.bells = BellManager(self)
         self.include_unlisted_primary = entry.options.get(CONF_INCLUDE_UNLISTED_PRIMARY, True)
 
@@ -91,5 +93,10 @@ class DMSSCoordinator(DataUpdateCoordinator):
             raise HomeAssistantError("DMSS unlock request failed; physical door state is unknown") from None
 
     async def async_close(self):
-        await self.bells.async_stop()
-        await self.async_call(self.client.http.close)
+        media, self.media = self.media, None
+        try:
+            if media is not None:
+                await media.async_close()
+        finally:
+            await self.bells.async_stop()
+            await self.async_call(self.client.http.close)
