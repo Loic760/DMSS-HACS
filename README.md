@@ -2,10 +2,9 @@
 
 DMSS is a Home Assistant custom integration for HACS. Version 0.3.0 adds on-demand HD cameras with received audio. Email/password setup, automatic session recovery, all three unlock buttons and doorbell events remain available.
 
-Version 0.3.2 improves HomeKit startup and reopening with a faster local container,
-decodable keyframe caching, and a fix for a cancelled shutdown timer interrupting
-a reopened stream. HACS layout metadata and official repository validation from
-0.3.1 remain included.
+Version 0.3.3 adds separate incoming-ring entities for HomeKit doorbell
+notifications. Connected, ended and missed calls do not ring HomeKit. The HD
+startup and reopening improvements from 0.3.2 remain included.
 
 ## Install
 
@@ -61,6 +60,24 @@ New event entities:
 - `event.building_doorbell_front`
 - `event.building_doorbell_back`
 - `event.building_doorbell_unknown`
+
+Version 0.3.3 also adds **ring-only** entities for HomeKit:
+
+- `event.building_doorbell_front_ring`
+- `event.building_doorbell_back_ring`
+- `event.building_doorbell_unknown_ring`
+
+These emit only `ring` at `phase: start` for a verified incoming-call signal.
+The existing event entities and HA automation triggers retain their IDs and
+behavior. HomeKit treats every linked event update as a doorbell press, so use
+the new ring-only entities when linking cameras; the broader entities above
+also contain call history and would create extra alerts.
+
+If an early ringing message lacks entrance identity and a later message
+identifies front/back during the same incoming call, the matching ring-only
+entity fires once. This internal attribution update does not replay existing
+HA event-bus/device-trigger notifications. An unidentified entrance stays on the
+unknown entity; the integration never guesses a camera or rings both cameras.
 
 Event types and phases:
 
@@ -181,6 +198,7 @@ homekit:
         - camera.building_front
     entity_config:
       camera.building_front:
+        linked_doorbell_sensor: event.building_doorbell_front_ring
         support_audio: true
         video_codec: copy
         audio_codec: libopus
@@ -196,6 +214,7 @@ homekit:
         - camera.building_back
     entity_config:
       camera.building_back:
+        linked_doorbell_sensor: event.building_doorbell_back_ring
         support_audio: true
         video_codec: copy
         audio_codec: libopus
@@ -209,6 +228,38 @@ homekit:
 camera capacity. These local viewers use the shared upstream. Pair both accessory
 codes in Apple Home. Actual Apple TV pairing remains untested.
 [Official HomeKit camera settings](https://www.home-assistant.io/integrations/homekit/)
+
+### Apple Home doorbell notifications
+
+1. Update DMSS to 0.3.3 or newer and restart Home Assistant. Check **Developer
+   tools → States** for the new `event.building_doorbell_front_ring` and
+   `event.building_doorbell_back_ring` entities. `unknown` before their first
+   ring is normal; `unavailable` means the local indoor-interphone feed is down.
+2. Add the `linked_doorbell_sensor` line shown above to each existing camera's
+   `entity_config` block. Keep its entity ID, HomeKit name and port. Do not add
+   the ring entities to the bridge's `include_entities` list.
+3. Restart Home Assistant, then enable doorbell notifications in Apple Home's
+   settings for each camera/doorbell. Keep the existing pairing initially. If
+   Apple Home retains the previous camera service list and does not offer
+   doorbell notifications, an accessory reset/re-pair may still be needed.
+
+The source is the indoor interphone's live incoming-call subscription, with a
+one-second current-state polling fallback. A bell is emitted when an incoming
+call is first detected; it does not wait for answer, hang-up or a missed-call
+record. The HA host must reach the indoor interphone on local TCP port 5000.
+Outdoor cameras can remain on their separate network.
+
+Regression tests construct the actual HA HomeKit camera/doorbell services and
+exercise its event handler on both supported HA versions. They verify incoming
+alerts before connection/end, duplicate suppression, later door attribution,
+rapid new calls, and no alerts from missed records, reconnects or initial
+states. Real push/poll call detection and Apple Home delivery still need an
+owner-observed front/back ring test; synthetic tests cannot confirm firmware
+timing or Apple notification settings.
+
+Bell detection itself opens no media. Apple Home may request a preview when a
+doorbell rings, which can open an on-demand stream. Leave Preload stream off.
+[HomeKit doorbell configuration](https://www.home-assistant.io/integrations/homekit/#doorbell-button-notifications)
 
 ### HomeKit startup and reopening
 

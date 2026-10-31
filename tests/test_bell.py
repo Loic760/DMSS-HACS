@@ -112,4 +112,38 @@ class BellTests(unittest.TestCase):
         self.assertIsNone(client.call_state_handle)
         self.assertTrue(client.call_state_supported)
 
+    def test_late_door_identity_is_reported_once_while_call_is_ringing(self):
+        for door, channel in (('front', 1), ('back', 2)):
+            with self.subTest(door=door):
+                n=BellNormalizer({})
+                first=n.normalize({'Code':'VTPCallState','Data':{'callState':'Called'}})
+                self.assertEqual((first['kind'],first['door']),('ring','unknown'))
+                identified=n.normalize({'Code':'Invite','Data':{'ChannelID':channel}})
+                self.assertEqual((identified['kind'],identified['door'],identified['phase']),
+                                 ('ring_identified',door,'start'))
+                self.assertTrue(identified['verified'])
+                self.assertIsNone(n.normalize({'Code':'VTPCallState','Data':{'callState':'Ringing','ChannelID':channel}}))
+                self.assertEqual(n.normalize({'Code':'VTPCallState','Data':{'callState':'Talking'}})['door'],door)
+
+    def test_late_identity_from_poll_or_bell_push_is_not_dropped(self):
+        for raw in (
+            {'Code':'VTPCallState','Data':{'callState':'Called','ChannelID':2}},
+            {'Code':'BackKeyLight','Data':{'State':1,'ChannelID':2}},
+        ):
+            with self.subTest(raw=raw):
+                n=BellNormalizer({})
+                n.normalize({'Code':'VTPCallState','Data':{'callState':'Called'}})
+                event=n.normalize(raw)
+                self.assertEqual((event['kind'],event['door']),('ring_identified','back'))
+                self.assertIsNone(n.normalize(raw))
+
+    def test_identical_invite_after_call_ends_is_a_new_ring_even_within_five_seconds(self):
+        n=BellNormalizer({})
+        invite={'Code':'Invite','Data':{'ChannelID':1}}
+        with patch('custom_components.dmss.bell_protocol.time.monotonic', return_value=42):
+            self.assertEqual(n.normalize(invite)['kind'],'ring')
+            self.assertIsNone(n.normalize(invite))
+            self.assertEqual(n.normalize({'Code':'VTPCallState','Data':{'callState':'Idle'}})['kind'],'call_ended')
+            self.assertEqual(n.normalize(invite)['kind'],'ring')
+
 if __name__=='__main__':unittest.main()

@@ -39,7 +39,7 @@ jobs:
           import homeassistant
           base = Path(homeassistant.__file__).parent / 'components'
           requirements = set()
-          for component in ('camera', 'stream', 'ffmpeg'):
+          for component in ('camera', 'stream', 'ffmpeg', 'homekit'):
               requirements.update(json.loads((base / component / 'manifest.json').read_text()).get('requirements', []))
           subprocess.run([sys.executable, '-m', 'pip', 'install', *sorted(requirements)], check=True)
           PY

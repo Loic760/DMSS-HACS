@@ -209,6 +209,13 @@ class BellNormalizer:
                 'disconnect':'ended','hangup':'ended','ended':'ended','end':'ended',
                 'cancelled':'ended','canceled':'ended','missed':'missed'}.get(value,'unknown')
 
+    def _identify_ringing_door(self, door):
+        """Report an unknown-to-known identity once during an active ring."""
+        previous = self.call.get('door', 'unknown')
+        if door != 'unknown':
+            self.call['door'] = door
+        return previous == 'unknown' and door in ('front', 'back')
+
     def normalize(self, event):
         import json
         if not isinstance(event,dict) or not isinstance(event.get('Code'),str):return None
@@ -221,11 +228,14 @@ class BellNormalizer:
         if code=='VTPCallState':
             if state in ('incoming','ringing'):
                 if self.call and self.call['state'] in ('incoming','ringing'):
-                    if door!='unknown':self.call['door']=door
+                    identified = self._identify_ringing_door(door)
                     self.call['code']=code
-                    return None
-                self.call={'state':state,'door':door,'code':code}
-                kind='ring';phase='start';title='Incoming doorbell call'
+                    if not identified:return None
+                    kind='ring_identified'
+                else:
+                    self.call={'state':state,'door':door,'code':code}
+                    kind='ring'
+                phase='start';title='Incoming doorbell call'
             elif state in ('connecting','connected'):
                 previous=self.call
                 if door=='unknown' and previous:door=previous['door']
@@ -245,16 +255,22 @@ class BellNormalizer:
             if not ringing and previous and self.call and self.call.get('code')=='BackKeyLight':
                 self.call=None
             if not ringing or previous:return None
-            if self.call and self.call['state'] in ('incoming','ringing'):return None
-            self.call={'state':'ringing','door':door,'code':code}
-            kind='ring';phase='start';title='Doorbell rang'
+            if self.call and self.call['state'] in ('incoming','ringing'):
+                if not self._identify_ringing_door(door):return None
+                kind='ring_identified'
+            else:
+                self.call={'state':'ringing','door':door,'code':code}
+                kind='ring'
+            phase='start';title='Doorbell rang'
         elif code in ('Invite','PhoneCallDetect','AccessDoorBell','DoorbellCall','TalkingInvite'):
             if action in ('stop','inactive'):return None
             if self.call and self.call['state'] in ('incoming','ringing'):
-                if door!='unknown':self.call['door']=door
-                return None
-            self.call={'state':'incoming','door':door,'code':code}
-            kind='ring';phase='start';title='Doorbell rang'
+                if not self._identify_ringing_door(door):return None
+                kind='ring_identified'
+            else:
+                self.call={'state':'incoming','door':door,'code':code}
+                kind='ring'
+            phase='start';title='Doorbell rang'
         elif code=='VideoTalkLog':
             # A delayed log can describe an older call while a new call is
             # already ringing. Never reset or attribute the live call from it.
@@ -272,7 +288,8 @@ class BellNormalizer:
                 kind='call';phase='connected';state='connected';title='Door call connected'
         fingerprint=hashlib.sha256(json.dumps(event,sort_keys=True,default=str).encode()).hexdigest()
         current=time.monotonic()
-        if code in ('VTPCallState','BackKeyLight'):pass  # State edges already suppress duplicates.
+        if code in ('VTPCallState','BackKeyLight') or kind in ('ring', 'ring_identified'):
+            pass  # State edges suppress duplicates, including rapid new calls.
         elif current-self.recent.get(fingerprint,-100)<=5:return None
         else:self.recent[fingerprint]=current
         self.recent={k:v for k,v in self.recent.items() if current-v<60}
