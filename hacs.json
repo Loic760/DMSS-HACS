@@ -1,5 +1,7 @@
 {
   "name": "DMSS",
+  "content_in_root": false,
+  "render_readme": true,
   "homeassistant": "2026.9.4",
   "hacs": "2.0.0"
 }

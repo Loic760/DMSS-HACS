@@ -1,7 +1,7 @@
 {
   "domain": "dmss",
   "name": "DMSS",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "config_flow": true,
   "documentation": "https://github.com/Loic760/DMSS-HACS",
   "issue_tracker": "https://github.com/Loic760/DMSS-HACS/issues",

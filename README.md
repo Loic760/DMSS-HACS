@@ -2,15 +2,40 @@
 
 DMSS is a Home Assistant custom integration for HACS. Version 0.3.0 adds on-demand HD cameras with received audio. Email/password setup, automatic session recovery, all three unlock buttons and doorbell events remain available.
 
+Version 0.3.1 explicitly declares the HACS repository layout, enables README rendering, and adds official HACS repository validation to CI. Integration behavior is unchanged.
+
 ## Install
 
 Home Assistant 2026.9.4 or newer is required.
 
-For HACS, add `https://github.com/Loic760/DMSS-HACS` under **HACS → Custom repositories**, category **Integration**, install DMSS, then restart Home Assistant. HACS requires the repository to be public. While this repository is private, use the manual installation below.
+For HACS, add `https://github.com/Loic760/DMSS-HACS` under **HACS → Custom repositories**, category **Integration**, install DMSS from the default branch (`main`), then restart Home Assistant.
 
 For manual installation, download the repository and copy the complete `custom_components/dmss` folder to `/config/custom_components/dmss`, then restart Home Assistant. No terminal login or macOS Keychain dependency is needed on the Home Assistant host.
 
 Open **Settings → Devices & services → Add integration → DMSS** and enter your DMSS email and password.
+
+### HACS download error: `custom_components/None/manifest.json`
+
+The integration manifest is at `custom_components/dmss/manifest.json`. `None` in
+the error means HACS has not resolved the integration directory; it is not the
+integration's domain. The published repository tree and manifest at commit
+`36811f7` were independently verified using HACS 2.0.5's directory discovery.
+
+1. Update HACS to its latest stable version and restart Home Assistant. A restart
+   clears an unresolved repository path held by the running HACS instance.
+2. Open **HACS → DMSS → ⋮ → Update information**, then download/redownload the
+   latest default branch (`main`), rather than selecting the old `36811f7` commit.
+3. Restart Home Assistant after the download.
+
+If HACS still shows the same `None` path, remove the DMSS repository entry from
+HACS, restart Home Assistant, and add the custom repository again as an
+**Integration** before downloading it. Keep your configured DMSS entry under
+**Settings → Devices & services**. Do not rename the integration folder to `None`
+or delete Home Assistant's `.storage` files.
+
+If the error persists after re-registration, include the HACS version and its
+download log in an issue. A repository metadata update alone cannot repair an
+incomplete GitHub tree response or stale path inside a running HACS instance.
 
 ## Door controls
 
